@@ -38,12 +38,14 @@ extern void cliproxy_plugin_shutdown(void);
 import "C"
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -55,8 +57,8 @@ const abiVersion = 1
 
 const (
 	pluginName       = "antigravity-coding-filter"
-	pluginVersion    = "0.2.1"
-	pluginRepository = "https://github.com/jellyfish-p/cpa-plugin-antigravity-coding-filter"
+	pluginVersion    = "0.2.2"
+	pluginRepository = "https://github.com/han-ava/cpa-plugin-antigravity-coding-filter"
 )
 
 func main() {}
@@ -579,23 +581,12 @@ func classifyRequestWithConfig(body []byte, cfg filterConfig) filterDecision {
 	if err := json.Unmarshal(body, &root); err != nil {
 		return filterDecision{}
 	}
-
-	mappings := effectiveMappings(cfg)
-	var decision filterDecision
-	walkJSON(root, func(path []string, value any) bool {
-		if len(path) == 0 || path[len(path)-1] != "system" {
-			return true
+	for _, mapping := range effectiveMappings(cfg) {
+		if _, changed := rewriteSystemFields(root, []rewriteMapping{mapping}); changed {
+			return filterDecision{Blocked: true, Signal: "system.keyword", Detail: mapping.Match}
 		}
-		text := strings.ToLower(collectText(value))
-		for _, mapping := range mappings {
-			if strings.Contains(text, mapping.Match) {
-				decision = filterDecision{Blocked: true, Signal: "system.keyword", Detail: mapping.Match}
-				return false
-			}
-		}
-		return true
-	})
-	return decision
+	}
+	return filterDecision{}
 }
 
 func rewriteRequestBody(body []byte) ([]byte, bool) {
@@ -604,7 +595,12 @@ func rewriteRequestBody(body []byte) ([]byte, bool) {
 
 func rewriteRequestBodyWithConfig(body []byte, cfg filterConfig) ([]byte, bool) {
 	var root any
-	if err := json.Unmarshal(body, &root); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if !json.Valid(body) {
+		return nil, false
+	}
+	if err := decoder.Decode(&root); err != nil {
 		return nil, false
 	}
 	rewritten, changed := rewriteSystemFields(root, effectiveMappings(cfg))
@@ -618,39 +614,18 @@ func rewriteRequestBodyWithConfig(body []byte, cfg filterConfig) ([]byte, bool) 
 	return raw, true
 }
 
+// Only the Anthropic top-level system field is supported. Never traverse tools,
+// metadata or user content looking for arbitrary properties named system.
 func rewriteSystemFields(value any, mappings []rewriteMapping) (any, bool) {
-	switch typed := value.(type) {
-	case map[string]any:
-		changed := false
-		for key, child := range typed {
-			if key == "system" {
-				next, childChanged := rewriteSystemValue(child, mappings)
-				if childChanged {
-					typed[key] = next
-					changed = true
-				}
-				continue
-			}
-			next, childChanged := rewriteSystemFields(child, mappings)
-			if childChanged {
-				typed[key] = next
-				changed = true
-			}
-		}
-		return typed, changed
-	case []any:
-		changed := false
-		for i, child := range typed {
-			next, childChanged := rewriteSystemFields(child, mappings)
-			if childChanged {
-				typed[i] = next
-				changed = true
-			}
-		}
-		return typed, changed
-	default:
+	root, ok := value.(map[string]any)
+	if !ok {
 		return value, false
 	}
+	next, changed := rewriteSystemValue(root["system"], mappings)
+	if changed {
+		root["system"] = next
+	}
+	return value, changed
 }
 
 func rewriteSystemValue(value any, mappings []rewriteMapping) (any, bool) {
@@ -664,56 +639,75 @@ func rewriteSystemValue(value any, mappings []rewriteMapping) (any, bool) {
 			changed = changed || replaced
 		}
 		return next, changed
-	case map[string]any:
-		changed := false
-		for key, child := range typed {
-			next, childChanged := rewriteSystemValue(child, mappings)
-			if childChanged {
-				typed[key] = next
-				changed = true
-			}
-		}
-		return typed, changed
 	case []any:
 		changed := false
-		for i, child := range typed {
-			next, childChanged := rewriteSystemValue(child, mappings)
-			if childChanged {
-				typed[i] = next
+		for _, child := range typed {
+			block, ok := child.(map[string]any)
+			if !ok || block["type"] != "text" {
+				continue
+			}
+			text, ok := block["text"].(string)
+			if !ok {
+				continue
+			}
+			next, replaced := rewriteSystemValue(text, mappings)
+			if replaced {
+				block["text"] = next
 				changed = true
 			}
 		}
-		return typed, changed
+		return value, changed
 	default:
 		return value, false
 	}
 }
 
 func replaceInsensitive(value, match, replacement string) (string, bool) {
-	if match == "" {
+	needle := []rune(strings.ToLower(match))
+	if len(needle) == 0 {
 		return value, false
 	}
-	lowerValue := strings.ToLower(value)
-	lowerMatch := strings.ToLower(match)
-	var builder strings.Builder
-	start := 0
+	runes := []rune(value)
+	var out strings.Builder
 	changed := false
-	for {
-		index := strings.Index(lowerValue[start:], lowerMatch)
-		if index < 0 {
-			break
+	word := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_' }
+	for i := 0; i < len(runes); {
+		end := i + len(needle)
+		found := end <= len(runes)
+		if found {
+			for j, r := range needle {
+				if unicode.ToLower(runes[i+j]) != r {
+					found = false
+					break
+				}
+			}
 		}
-		index += start
-		builder.WriteString(value[start:index])
-		builder.WriteString(replacement)
-		start = index + len(match)
-		changed = true
+		if found && ((i > 0 && word(runes[i-1])) || (end < len(runes) && word(runes[end]))) {
+			found = false
+		}
+		// Ambiguous product names require an explicit identity statement. Ordinary
+		// technical prose (e.g. cursor pagination) must retain its original meaning.
+		if found {
+			switch strings.ToLower(match) {
+			case "cursor", "cline", "aider", "goose", "tabby", "hermes", "trae", "devin":
+				prefix := strings.ToLower(strings.TrimSpace(string(runes[:i])))
+				suffix := strings.ToLower(string(runes[end:]))
+				found = strings.HasSuffix(prefix, "you are") || strings.HasSuffix(prefix, "run as") || strings.HasPrefix(suffix, " session")
+			}
+		}
+		if found {
+			out.WriteString(replacement)
+			i = end
+			changed = true
+		} else {
+			out.WriteRune(runes[i])
+			i++
+		}
 	}
 	if !changed {
 		return value, false
 	}
-	builder.WriteString(value[start:])
-	return builder.String(), true
+	return out.String(), true
 }
 
 func walkJSON(value any, visit func(path []string, value any) bool) {

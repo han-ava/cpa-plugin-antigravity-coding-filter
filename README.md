@@ -92,3 +92,18 @@ Confirm the plugin reports `registered: true` and `effective_enabled: true`.
 ```powershell
 go test ./...
 ```
+
+## Fork safety fixes (0.2.2)
+
+This fork only rewrites the top-level Anthropic `system` string or `type: text`
+blocks' `text` fields. Tool schemas, metadata, signatures and other block fields
+are preserved. OpenAI `messages`/`instructions` and Gemini `systemInstruction`
+are not processed; this version does not expand protocol coverage.
+
+Matches require Unicode word boundaries and preserve original Unicode offsets.
+Ambiguous names (Cursor, Cline, Aider, Goose, Tabby, Hermes, Trae, Devin) require
+an identity context: immediately after `you are` / `run as`, or immediately before
+` session` (case-insensitive). This also applies to custom mappings using those
+names. Ordinary phrases such as `cursor pagination` are left unchanged.
+Large JSON integers are preserved during re-encoding. These changes prevent
+payload corruption; they do not bypass or resolve upstream quota/rate limits.
