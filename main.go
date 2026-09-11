@@ -57,7 +57,7 @@ const abiVersion = 1
 
 const (
 	pluginName       = "antigravity-coding-filter"
-	pluginVersion    = "0.2.2"
+	pluginVersion    = "0.2.3"
 	pluginRepository = "https://github.com/han-ava/cpa-plugin-antigravity-coding-filter"
 )
 
@@ -137,9 +137,9 @@ func handlePluginCall(method string, request []byte) ([]byte, int) {
 			Headers:    jsonHeaders(),
 		}), 0
 	case pluginabi.MethodRequestInterceptBefore:
-		return handleRequestInterceptBefore(request), 0
-	case pluginabi.MethodRequestInterceptAfter:
 		return mustEnvelope(pluginapi.RequestInterceptResponse{}), 0
+	case pluginabi.MethodRequestInterceptAfter:
+		return handleRequestInterceptAfter(request), 0
 	default:
 		return mustErrorEnvelope("unknown_method", fmt.Sprintf("unknown method %q", method)), 0
 	}
@@ -186,8 +186,8 @@ func registrationResponse() any {
 			ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
 			RequestInterceptor    bool                         `json:"request_interceptor"`
 		}{
-			ModelRouter:           true,
-			Executor:              true,
+			ModelRouter:           false,
+			Executor:              false,
 			ExecutorModelScope:    pluginapi.ExecutorModelScopeBoth,
 			ExecutorInputFormats:  []string{"chat-completions", "responses", "anthropic", "gemini"},
 			ExecutorOutputFormats: []string{"chat-completions", "responses", "anthropic", "gemini"},
@@ -217,26 +217,10 @@ func configFields() []pluginapi.ConfigField {
 	}
 }
 
+// Routing runs before credential selection. Never infer the provider from a
+// client model name or from the list of registered providers.
 func handleModelRoute(request []byte) []byte {
-	var req pluginapi.ModelRouteRequest
-	if err := json.Unmarshal(request, &req); err != nil {
-		return mustErrorEnvelope("invalid_request", fmt.Sprintf("decode model.route request: %v", err))
-	}
-
-	cfg := activeFilterConfig()
-	if cfg.Mode != filterModeBlock {
-		return mustEnvelope(pluginapi.ModelRouteResponse{Handled: false})
-	}
-	decision := classifyRequestWithConfig(req.Body, cfg)
-	if !decision.Blocked {
-		return mustEnvelope(pluginapi.ModelRouteResponse{Handled: false})
-	}
-
-	return mustEnvelope(pluginapi.ModelRouteResponse{
-		Handled:    true,
-		TargetKind: pluginapi.ModelRouteTargetSelf,
-		Reason:     fmt.Sprintf("%s:%s", decision.Signal, decision.Detail),
-	})
+	return mustEnvelope(pluginapi.ModelRouteResponse{Handled: false})
 }
 
 const (
@@ -267,12 +251,26 @@ func jsonHeaders() http.Header {
 	return http.Header{"content-type": []string{"application/json"}}
 }
 
-func handleRequestInterceptBefore(request []byte) []byte {
+func handleRequestInterceptAfter(request []byte) []byte {
 	var req pluginapi.RequestInterceptRequest
 	if err := json.Unmarshal(request, &req); err != nil {
-		return mustErrorEnvelope("invalid_request", fmt.Sprintf("decode request.intercept_before request: %v", err))
+		return mustErrorEnvelope("invalid_request", fmt.Sprintf("decode request.intercept_after request: %v", err))
+	}
+	// The built-in Antigravity executor supplies this target format only after
+	// auth selection, while the body is still in the original client format.
+	if req.ToFormat != "antigravity" {
+		return mustEnvelope(pluginapi.RequestInterceptResponse{})
 	}
 	cfg := activeFilterConfig()
+	if cfg.Mode == filterModeBlock && classifyRequestWithConfig(req.Body, cfg).Blocked {
+		// Termination fields are understood by the deployed CPA v7.2.157 host.
+		return mustEnvelope(struct {
+			Terminate       bool
+			StatusCode      int
+			ResponseHeaders http.Header
+			ResponseBody    []byte
+		}{true, http.StatusForbidden, jsonHeaders(), blockPayload()})
+	}
 	if cfg.Mode != filterModeRewrite {
 		return mustEnvelope(pluginapi.RequestInterceptResponse{})
 	}

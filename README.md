@@ -107,3 +107,13 @@ an identity context: immediately after `you are` / `run as`, or immediately befo
 names. Ordinary phrases such as `cursor pagination` are left unchanged.
 Large JSON integers are preserved during re-encoding. These changes prevent
 payload corruption; they do not bypass or resolve upstream quota/rate limits.
+
+## Provider isolation (0.2.3)
+
+Both rewrite and block modes run only in the post-auth interceptor, when CPA's
+selected executor supplies `ToFormat: antigravity`. Other targets and unknown
+(empty) targets are unchanged, even if a model name contains `antigravity` or a
+system prompt mentions Codex. Pre-auth interception and model routing do nothing.
+The filter remains limited to the original Anthropic top-level `system` field.
+Block mode uses post-auth HTTP 403 termination supported by CPA v7.2.157;
+use v7.2.157 or newer for this version. No provider is inferred from model names.

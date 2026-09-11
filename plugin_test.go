@@ -24,10 +24,10 @@ func TestHandlePluginCallRegisterDeclaresBothFilterModes(t *testing.T) {
 		t.Fatalf("GitHubRepository = %#v, want %q", metadata["GitHubRepository"], pluginRepository)
 	}
 	capabilities := result["capabilities"].(map[string]any)
-	if capabilities["model_router"] != true {
+	if capabilities["model_router"] != false {
 		t.Fatalf("model_router = %#v, want true", capabilities["model_router"])
 	}
-	if capabilities["executor"] != true {
+	if capabilities["executor"] != false {
 		t.Fatalf("executor = %#v, want true", capabilities["executor"])
 	}
 	if capabilities["request_interceptor"] != true {
@@ -148,7 +148,7 @@ func TestHandlePluginCallRequestInterceptBeforeRewritesCodingSignals(t *testing.
 
 	request := requestInterceptRequestJSON(t, `{"system":"You are Codex.","messages":[]}`)
 
-	raw, code := handlePluginCall("request.intercept_before", request)
+	raw, code := handlePluginCall("request.intercept_after", request)
 	if code != 0 {
 		t.Fatalf("code = %d, want 0; body=%s", code, raw)
 	}
@@ -177,7 +177,7 @@ func TestHandlePluginCallRequestInterceptBeforeDoesNotRewriteInDefaultBlockMode(
 	applyFilterConfig(defaultFilterConfig())
 
 	request := requestInterceptRequestJSON(t, `{"system":"You are Codex.","messages":[]}`)
-	raw, code := handlePluginCall("request.intercept_before", request)
+	raw, code := handlePluginCall("request.intercept_after", request)
 	if code != 0 {
 		t.Fatalf("code = %d, want 0; body=%s", code, raw)
 	}
@@ -191,36 +191,6 @@ func TestHandlePluginCallRequestInterceptBeforeDoesNotRewriteInDefaultBlockMode(
 	mustUnmarshalJSON(t, raw, &envelope)
 	if !envelope.OK || envelope.Result.Body != "" {
 		t.Fatalf("response = %s, want unchanged request in block mode", raw)
-	}
-}
-
-func TestHandlePluginCallModelRouteBlocksMatchedRequestsByDefault(t *testing.T) {
-	defer restoreDefaultFilterConfig(t)
-	applyFilterConfig(defaultFilterConfig())
-
-	request := modelRouteRequestJSON(t, `{"system":"You are Qoder.","messages":[]}`)
-	raw, code := handlePluginCall("model.route", request)
-	if code != 0 {
-		t.Fatalf("code = %d, want 0; body=%s", code, raw)
-	}
-
-	var envelope struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			Handled    bool   `json:"Handled"`
-			TargetKind string `json:"TargetKind"`
-			Reason     string `json:"Reason"`
-		} `json:"result"`
-	}
-	mustUnmarshalJSON(t, raw, &envelope)
-	if !envelope.OK || !envelope.Result.Handled {
-		t.Fatalf("response = %s, want handled block route", raw)
-	}
-	if envelope.Result.TargetKind != "self" {
-		t.Fatalf("TargetKind = %q, want self", envelope.Result.TargetKind)
-	}
-	if !strings.Contains(envelope.Result.Reason, "system.keyword:qoder") {
-		t.Fatalf("Reason = %q, want qoder keyword detail", envelope.Result.Reason)
 	}
 }
 
@@ -332,7 +302,7 @@ func TestHandlePluginCallReconfigureRejectsInvalidModeAndKeepsPreviousConfig(t *
 func TestHandlePluginCallRequestInterceptBeforePassesCleanRequests(t *testing.T) {
 	request := requestInterceptRequestJSON(t, `{"system":"You are Antigravity.","messages":[]}`)
 
-	raw, code := handlePluginCall("request.intercept_before", request)
+	raw, code := handlePluginCall("request.intercept_after", request)
 	if code != 0 {
 		t.Fatalf("code = %d, want 0; body=%s", code, raw)
 	}
@@ -377,7 +347,7 @@ func requestInterceptRequestJSON(t *testing.T, body string) []byte {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{
 		"SourceFormat":   "openai",
-		"ToFormat":       "",
+		"ToFormat":       "antigravity",
 		"Model":          "antigravity/test",
 		"RequestedModel": "antigravity/test",
 		"Body":           []byte(body),

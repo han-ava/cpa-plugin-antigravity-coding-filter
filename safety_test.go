@@ -40,3 +40,32 @@ func TestRewriteKeepsModelAndMetadata(t *testing.T) {
 		t.Fatalf("unexpected change: %s", got)
 	}
 }
+
+func TestProviderIsolation(t *testing.T) {
+	defer restoreDefaultFilterConfig(t)
+	for _, mode := range []filterMode{filterModeRewrite, filterModeBlock} {
+		applyFilterConfig(filterConfig{Mode: mode, UseDefaultKeywords: true})
+		for _, target := range []string{"", "codex", "openai", "claude", "gemini", "antigravity"} {
+			for _, method := range []string{"request.intercept_before", "request.intercept_after", "model.route"} {
+				request, _ := json.Marshal(map[string]any{"ToFormat": target, "Model": "gemini-3.8-flash-high", "RequestedModel": "antigravity/test", "Body": []byte(`{"system":"You are Codex."}`)})
+				raw, _ := handlePluginCall(method, request)
+				var r struct {
+					Result struct {
+						Body       []byte
+						Terminate  bool
+						StatusCode int
+						Handled    bool
+					}
+				}
+				json.Unmarshal(raw, &r)
+				applies := target == "antigravity" && method == "request.intercept_after"
+				if r.Result.Handled || (len(r.Result.Body) > 0) != (applies && mode == filterModeRewrite) || r.Result.Terminate != (applies && mode == filterModeBlock) {
+					t.Fatalf("mode=%s target=%s method=%s: %s", mode, target, method, raw)
+				}
+				if r.Result.Terminate && r.Result.StatusCode != 403 {
+					t.Fatalf("wrong block status: %s", raw)
+				}
+			}
+		}
+	}
+}
